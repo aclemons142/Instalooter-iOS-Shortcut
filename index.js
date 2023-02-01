@@ -4,6 +4,7 @@
 // "https://giphy.com/gifs/cny-lunar-yeremiaas-7o16UGO32fgid6PAf0";
 // "https://giphy.com/clips/buzzfeed-irish-americans-try-to-pronounce-traditional-names-Dcl0XM9i4FRWiFMFWb";
 // "https://www.instagram.com/reel/CnvhkMHDpAY/?utm_source=ig_web_copy_link";
+// "https://www.youtube.com/shorts/e8wqWpEkbWQ"
 
 // Services & Imports
 const giphy = require('giphy')('AMaXOQk7i8gRouAjHjjSoE8TJdtCKk3j');
@@ -11,16 +12,47 @@ const instagramGetUrl = require("instagram-url-direct");
 const express = require("express");
 const app = express();
 const bodyParser = require('body-parser');
-
+const ytdl = require('ytdl-core');
+const path = require('node:path');
+const fs = require('fs');
+const os = require('os');
 
 // Consts
 const PORT = process.env.PORT || 3000;
 const parser = bodyParser.json();
 const TRUST_CODE = "egUt1aahXi7lU6ps";
+const EXT_HOST = "instalooter.us-3.evennode.com"
+const YOUTUBE_PATH = path.resolve("./youtube");
+const IS_LOCAL = os.hostname().indexOf(".local") !== -1;
+const HOST = IS_LOCAL ? `http://localhost:${PORT}` : `http://${EXT_HOST}`
 
 // Main
 let Looter = {
     VideoId: null,
+    GetYoutubeShort: async url => {
+        let id = ytdl.getURLVideoID(url);
+        let path = `${YOUTUBE_PATH}/${id}.mp4`;
+        let out = fs.createWriteStream(path);
+        let savePath = `${HOST}/youtube/${id}.mp4`;
+        let result = new Promise( (resolve, reject) => {
+            let res = ytdl(url).pipe(out);
+            res.on('finish', () => {
+                console.log(`You have successfully created a video`);
+                resolve(savePath);
+            });
+            res.on('error', (err) => {
+                console.log(`Error: ${error.message}`);
+                reject(err)
+            });
+        });
+        setTimeout(() => {
+            Looter.CleanVideoFile(path);
+        }, 60000);
+        return await result;
+    },
+    CleanVideoFile: filename => {
+        fs.rmSync(filename);
+    },
     GetInstagramVideo: async url => {
         Looter.VideoId = Looter.ExtractInstagramId(url);
         var links = await instagramGetUrl(`https://www.instagram.com/tv/${Looter.VideoId}/`)
@@ -68,6 +100,7 @@ function DetermineServiceByUrl(url) {
     let host = new URL(url).hostname;
     if (host.indexOf("instagram.com") !== -1) return "INSTAGRAM";
     if (host.indexOf("giphy.com") !== -1) return "GIPHY";
+    if (host.indexOf("youtube.com") !== -1) return "YOUTUBE";
 }
 
 async function GetVideoUrl(url) {
@@ -75,11 +108,14 @@ async function GetVideoUrl(url) {
     switch (DetermineServiceByUrl(url)) {
         case "INSTAGRAM": return await Looter.GetInstagramVideo(url)
         case "GIPHY": return await Looter.GetGiphyVideo(url)
+        case "YOUTUBE": return await Looter.GetYoutubeShort(url)
         default: return null
     }
 }
 
-app.use("*", async (req, res, next) => {
+app.use('/youtube', express.static('youtube'))
+
+app.post("*", async (req, res, next) => {
     if (!req.headers.hasOwnProperty("trustcode") || req.headers["trustcode"] !== TRUST_CODE) {
         return res.sendStatus(401);
     } else {
