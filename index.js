@@ -23,44 +23,105 @@ const parser = bodyParser.json();
 const TRUST_CODE = "egUt1aahXi7lU6ps";
 const EXT_HOST = "instalooter.us-3.evennode.com"
 const YOUTUBE_PATH = path.resolve("./youtube");
+const WEBM_PATH = path.resolve("./webm");
 const IS_LOCAL = os.hostname().indexOf(".local") !== -1;
-const HOST = IS_LOCAL ? `http://localhost:${PORT}` : `http://${EXT_HOST}`
+const HOST = IS_LOCAL ? `http://localhost:${PORT}` : `http://${EXT_HOST}`;
+const FILE_DELETE_TIMEOUT = 300000;
+
+// ffmpeg Support
+const { createFFmpeg, fetchFile } = require('@ffmpeg/ffmpeg');
+const ffmpeg = createFFmpeg({ log: true });
 
 // Main
 let Looter = {
     VideoId: null,
     GetYoutubeShort: async url => {
-        let id = ytdl.getURLVideoID(url);
-        let path = `${YOUTUBE_PATH}/${id}.mp4`;
+        // Assign video ID
+        Looter.VideoId = ytdl.getURLVideoID(url);
+        
+        // Setup paths and streams
+        let path = `${YOUTUBE_PATH}/${Looter.VideoId}.mp4`;
         let out = fs.createWriteStream(path);
-        let savePath = `${HOST}/youtube/${id}.mp4`;
+        let savePath = `${HOST}/youtube/${Looter.VideoId}.mp4`;
+
+        // Get readStream from ytdl and save as writeSteam to the filepath
         let result = new Promise( (resolve, reject) => {
             let res = ytdl(url).pipe(out);
-            res.on('finish', () => {
-                console.log(`You have successfully created a video`);
-                resolve(savePath);
-            });
+            res.on('finish', () => resolve(savePath));
             res.on('error', (err) => {
                 console.log(`Error: ${error.message}`);
                 reject(err)
             });
         });
-        setTimeout(() => {
-            Looter.CleanVideoFile(path);
-        }, 60000);
+
+        // Remove the file after time has passed
+        setTimeout(() => Looter.CleanVideoFile(path), FILE_DELETE_TIMEOUT);
+
+        // Log success message
+        Looter.LogSuccess(url);
+
+        // Return the result
         return await result;
+    },
+    GetConvertWebm: async url => {
+        // Assign video ID
+        Looter.VideoId = Looter.ExtractFilename(url);
+
+        // Input and output filenames
+        let inputFileName = `${Looter.VideoId}.webm`;
+        let outputFileName = `${Looter.VideoId}.mp4`;
+
+        // Paths
+        let outPath = `${WEBM_PATH}/${outputFileName}`;
+        let webPath = `${HOST}/webm/${outputFileName}`;
+
+        // Spool up ffmpeg client
+        await ffmpeg.load();
+
+        // Fetch WEBM and write file to virtual file store
+        ffmpeg.FS('writeFile', inputFileName, await fetchFile(url));
+
+        // Run ffmpeg
+        await ffmpeg.run('-fflags', '+genpts', '-i', inputFileName, '-r', '24', outputFileName);
+
+        // Write output file to actual filesysytem
+        await fs.promises.writeFile(outPath, ffmpeg.FS('readFile', outputFileName));
+        
+        // Remove the files after time has passed
+        setTimeout(() => Looter.CleanVideoFile(outPath), FILE_DELETE_TIMEOUT);
+
+        // Log success message
+        Looter.LogSuccess(url);
+
+        return webPath
+
+    },
+    ExtractFilename: url => {
+        if (!url) return null;
+        url = new URL(url);
+        let pathParts = url.pathname.split("/");
+        let fileId = pathParts[pathParts.length - 1].split(".")[0];
+        return fileId;
     },
     CleanVideoFile: filename => {
         fs.rmSync(filename);
+        console.log(`Removing ${filename}`);
+    },
+    LogSuccess: url => {
+        let today = new Date();
+        let timestamp = `${today.toLocaleDateString()} at ${today.toLocaleTimeString()}`;
+        console.log(`\n ${timestamp} - URL ${url}: Converted successfully to downloadable asset\n`);
     },
     GetInstagramVideo: async url => {
         Looter.VideoId = Looter.ExtractInstagramId(url);
+        if (!Looter.VideoId) return null;
         var links = await instagramGetUrl(`https://www.instagram.com/tv/${Looter.VideoId}/`)
         if (!links || (links && links.results_number == 0)) return null;
         let theLink = links.url_list[0];
         if (new URL(decodeURI(theLink)).hostname.indexOf("converter") !== -1) {
             theLink = theLink.split("&filename")[0]
         }
+        Looter.LogSuccess(url);
         return theLink;
     },
     GetGiphyVideo: async url => {
@@ -74,11 +135,12 @@ let Looter = {
                 resolve(url)
             })
         })
+        Looter.LogSuccess(url);
         return await promise;
     },
     ExtractInstagramId: url => {
         url = url.split("https://www.instagram.com/reel/")[1];
-        if (url.indexOf("/")) url = url.split("/")[0];
+        if (url && url.indexOf("/")) url = url.split("/")[0];
         return url;
     },
     ExtractGiphyId: url => {
@@ -96,8 +158,12 @@ let Looter = {
 }
 
 // Utility functions
-function DetermineServiceByUrl(url) {
-    let host = new URL(url).hostname;
+function DetermineServiceByUrl(u) {
+    let url = new URL(u);
+    let host = url.hostname;
+    let path = url.pathname;
+
+    if (path.endsWith(".webm")) return "WEBM";
     if (host.indexOf("instagram.com") !== -1) return "INSTAGRAM";
     if (host.indexOf("giphy.com") !== -1) return "GIPHY";
     if (host.indexOf("youtube.com") !== -1) return "YOUTUBE";
@@ -109,11 +175,14 @@ async function GetVideoUrl(url) {
         case "INSTAGRAM": return await Looter.GetInstagramVideo(url)
         case "GIPHY": return await Looter.GetGiphyVideo(url)
         case "YOUTUBE": return await Looter.GetYoutubeShort(url)
+        case "WEBM": return await Looter.GetConvertWebm(url)
         default: return null
     }
 }
 
+// Static paths for downloads
 app.use('/youtube', express.static('youtube'))
+app.use('/webm', express.static('webm'))
 
 app.post("*", async (req, res, next) => {
     if (!req.headers.hasOwnProperty("trustcode") || req.headers["trustcode"] !== TRUST_CODE) {

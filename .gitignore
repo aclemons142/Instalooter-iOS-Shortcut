@@ -127,3 +127,5 @@ dist
 .pnp.*
 .DS_Store
 youtube/.DS_Store
+*.mp4
+webm/*
